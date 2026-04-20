@@ -13,6 +13,7 @@
         .indent-step::before { content: ""; position: absolute; left: 0; top: 24px; width: 12px; height: 2px; background: #cbd5e1; }
         .nested-row { transition: all 0.2s ease; }
         .occupied-row { background-color: #fffbeb !important; border-color: #f59e0b !important; }
+        input[type="checkbox"]:disabled { opacity: 0.3; cursor: not-allowed; }
     </style>
 </head>
 <body class="p-4 md:p-8">
@@ -20,7 +21,7 @@
     <div class="max-w-6xl mx-auto">
         <header class="mb-8 text-center">
             <h1 class="text-3xl font-bold text-slate-800">Calcolatore IP</h1>
-            <p class="text-slate-500 italic">Pianifica l'occupazione delle tue reti selezionando le sottoreti</p>
+            <p class="text-slate-500 italic">Pianifica l'occupazione delle tue reti con calcolo preciso dell'overhead</p>
         </header>
 
         <!-- Input Principale -->
@@ -36,12 +37,12 @@
                 </div>
                 <div class="flex justify-end items-center gap-4">
                     <div class="text-right">
-                        <p class="text-[10px] uppercase text-slate-400 font-black">Capacità Totale</p>
+                        <p class="text-[10px] uppercase text-slate-400 font-black">Capacità Lorda</p>
                         <p id="rootCapacity" class="text-xl font-mono text-slate-800 font-bold">-</p>
                     </div>
                     <div class="text-right border-l pl-4">
-                        <p class="text-[10px] uppercase text-slate-400 font-black text-amber-600">Occupati Selezionati</p>
-                        <p id="totalOccupiedCount" class="text-xl font-mono text-amber-600 font-bold">0</p>
+                        <p class="text-[10px] uppercase text-slate-400 font-black text-amber-600">Host Utilizzabili</p>
+                        <p id="totalUsableCount" class="text-xl font-mono text-blue-600 font-bold">0</p>
                     </div>
                 </div>
             </div>
@@ -51,13 +52,20 @@
             <div class="grid grid-cols-1 lg:grid-cols-4 gap-8 mb-8">
                 <!-- Grafico Utilizzo -->
                 <div class="card p-6 flex flex-col items-center justify-center border border-slate-200 lg:col-span-1">
-                    <h2 class="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center">Stato della Rete Root</h2>
+                    <h2 class="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center">Analisi Indirizzi</h2>
                     <div class="relative w-[150px] h-[150px]">
                         <svg width="150" height="150" viewBox="0 0 100 100">
+                            <!-- Background (Liberi) -->
                             <circle cx="50" cy="50" r="40" fill="transparent" stroke="#e2e8f0" stroke-width="12" />
+                            <!-- Occupati -->
                             <circle id="occupiedRing" cx="50" cy="50" r="40" fill="transparent" 
                                     stroke="#f59e0b" stroke-width="12" stroke-dasharray="251.3" stroke-dashoffset="251.3"
                                     class="progress-ring__circle" />
+                            <!-- Overhead Subnets -->
+                            <circle id="subnetOverheadRing" cx="50" cy="50" r="40" fill="transparent" 
+                                    stroke="#fca5a5" stroke-width="12" stroke-dasharray="251.3" stroke-dashoffset="251.3"
+                                    class="progress-ring__circle" />
+                            <!-- Overhead Root (Sistema) -->
                             <circle id="overheadRing" cx="50" cy="50" r="40" fill="transparent" 
                                     stroke="#ef4444" stroke-width="12" stroke-dasharray="251.3" stroke-dashoffset="251.3"
                                     class="progress-ring__circle" />
@@ -68,18 +76,19 @@
                         </div>
                     </div>
                     <div class="mt-4 space-y-1 w-full text-[9px] font-bold uppercase">
-                        <div class="flex justify-between"><span class="text-red-500">● Sistema (2)</span><span id="overheadVal">0</span></div>
+                        <div class="flex justify-between"><span class="text-red-600">● Sistema (Root)</span><span id="overheadVal">0</span></div>
+                        <div class="flex justify-between"><span class="text-red-300">● Overhead Subnet</span><span id="subnetOverheadVal">0</span></div>
                         <div class="flex justify-between"><span class="text-amber-500">● Occupati</span><span id="occupiedVal">0</span></div>
-                        <div class="flex justify-between"><span class="text-slate-400">● Liberi</span><span id="freeVal">0</span></div>
+                        <div class="flex justify-between"><span class="text-slate-400">● Liberi Reali</span><span id="freeVal">0</span></div>
                     </div>
                 </div>
 
                 <!-- Struttura Gerarchica -->
                 <div class="card p-6 border border-slate-200 lg:col-span-3">
                     <div class="flex items-center justify-between mb-6">
-                        <h2 class="text-lg font-bold text-slate-700 font-mono italic"># root_network_structure</h2>
-                        <div class="flex gap-2">
-                            <span class="text-[10px] bg-slate-100 px-2 py-1 rounded">Seleziona per occupare</span>
+                        <h2 class="text-lg font-bold text-slate-700 font-mono italic"># network_topology</h2>
+                        <div class="flex flex-col text-right">
+                            <span class="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded font-bold">Ogni divisione consuma 2 IP (Net/BC)</span>
                         </div>
                     </div>
                     
@@ -100,7 +109,7 @@
         const ipInput = document.getElementById('ipInput');
         const hierarchyRoot = document.getElementById('hierarchyRoot');
         
-        let occupiedSubnets = new Set(); // Memorizza gli ID delle reti occupate
+        let occupiedMap = {}; 
 
         // Setup CIDR
         for (let i = 0; i <= 32; i++) {
@@ -128,32 +137,81 @@
             const cidr = parseInt(cidrSelect.value);
             if (!isValidIp(ip)) return;
 
-            const total = Math.pow(2, 32 - cidr);
-            const usable = cidr <= 30 ? total - 2 : (cidr === 31 ? 2 : 1);
-            const overhead = total - usable;
+            // Capacità Lorda (es. 256 per una /24)
+            const totalLordo = Math.pow(2, 32 - cidr);
+            
+            // Overhead del sistema principale
+            const rootOverhead = cidr <= 30 ? 2 : (cidr === 31 ? 0 : 0);
+            
+            // Calcolo ricorsivo overhead delle sottoreti create
+            let totalSubnetOverhead = 0;
+            const visibleSubnets = hierarchyRoot.querySelectorAll('.nested-row');
+            
+            // Un trucco semplice: ogni volta che una riga ha figli visibili, 
+            // stiamo creando una divisione. Se però la divisione è la root, l'abbiamo già contata.
+            // Contiamo le reti "foglia" e le reti "intermediate"
+            const allContainers = hierarchyRoot.querySelectorAll('.children-container:not(.hidden)');
+            totalSubnetOverhead = allContainers.length * 2;
 
-            // Calcola il totale degli host occupati sommando la dimensione di ogni subnet spuntata
+            // Calcolo occupati
             let occupiedTotal = 0;
-            occupiedSubnets.forEach(size => {
-                occupiedTotal += size;
-            });
+            for (let key in occupiedMap) {
+                occupiedTotal += occupiedMap[key];
+            }
 
-            // Se l'utente spunta tutto, non può superare il totale utilizzabile
-            occupiedTotal = Math.min(occupiedTotal, usable);
-            const free = Math.max(0, usable - occupiedTotal);
+            // Host Liberi Reali = Totale Lordo - RootOverhead - SubnetOverhead - Occupati
+            const free = Math.max(0, totalLordo - rootOverhead - totalSubnetOverhead - occupiedTotal);
+            const usableTotali = totalLordo - rootOverhead - totalSubnetOverhead;
 
             // Update UI
-            document.getElementById('rootCapacity').textContent = usable;
-            document.getElementById('totalOccupiedCount').textContent = occupiedTotal;
-            document.getElementById('overheadVal').textContent = overhead;
+            document.getElementById('rootCapacity').textContent = totalLordo;
+            document.getElementById('totalUsableCount').textContent = usableTotali;
+            
+            document.getElementById('overheadVal').textContent = rootOverhead;
+            document.getElementById('subnetOverheadVal').textContent = totalSubnetOverhead;
             document.getElementById('occupiedVal').textContent = occupiedTotal;
             document.getElementById('freeVal').textContent = free;
-            document.getElementById('freePercent').textContent = Math.round((free / usable) * 100) + "%";
+            
+            const percentValue = usableTotali > 0 ? Math.round((free / usableTotali) * 100) : 0;
+            document.getElementById('freePercent').textContent = percentValue + "%";
 
             // Update Rings
             const circ = 2 * Math.PI * 40;
-            document.getElementById('overheadRing').style.strokeDashoffset = circ - (overhead / total * circ);
-            document.getElementById('occupiedRing').style.strokeDashoffset = circ - ((overhead + occupiedTotal) / total * circ);
+            
+            // 1. Rosso Scuro: Overhead Root
+            const rootOff = (rootOverhead / totalLordo) * circ;
+            document.getElementById('overheadRing').style.strokeDashoffset = circ - rootOff;
+            
+            // 2. Rosso Chiaro: Overhead Subnets (inizia dopo root)
+            const subOff = ((rootOverhead + totalSubnetOverhead) / totalLordo) * circ;
+            document.getElementById('subnetOverheadRing').style.strokeDashoffset = circ - subOff;
+            
+            // 3. Arancione: Occupati (inizia dopo gli overhead)
+            const occOff = ((rootOverhead + totalSubnetOverhead + occupiedTotal) / totalLordo) * circ;
+            document.getElementById('occupiedRing').style.strokeDashoffset = circ - occOff;
+        }
+
+        function refreshHierarchyLocks(container) {
+            const allRows = container.querySelectorAll('.nested-row');
+            
+            allRows.forEach(row => {
+                const check = row.querySelector('input[type="checkbox"]');
+                const childrenContainer = row.querySelector('.children-container');
+                
+                if (check.checked) {
+                    const childChecks = childrenContainer.querySelectorAll('input[type="checkbox"]');
+                    childChecks.forEach(c => {
+                        c.disabled = true;
+                        c.checked = false;
+                        delete occupiedMap[c.dataset.key];
+                        c.closest('.group').classList.remove('occupied-row');
+                    });
+                } else {
+                    const hasOccupiedChild = childrenContainer.querySelectorAll('input[type="checkbox"]:checked').length > 0;
+                    check.disabled = hasOccupiedChild;
+                }
+            });
+            calculateGlobalStats();
         }
 
         function updateUI() {
@@ -169,7 +227,7 @@
             document.getElementById('errorMsg').classList.add('hidden');
             document.getElementById('mainContent').classList.remove('hidden');
             
-            occupiedSubnets.clear();
+            occupiedMap = {}; 
             hierarchyRoot.innerHTML = '';
             hierarchyRoot.appendChild(createSubnetRow(ipToLong(ip), cidr, 0));
             calculateGlobalStats();
@@ -179,7 +237,7 @@
             const size = Math.pow(2, 32 - cidr);
             const usable = cidr <= 30 ? size - 2 : (cidr === 31 ? 2 : 1);
             const bcLong = netLong + size - 1;
-            const subId = `${netLong}_${cidr}`;
+            const subUniqueKey = `${netLong}_${cidr}`;
 
             const container = document.createElement('div');
             container.className = `nested-row ${depth > 0 ? 'indent-step mt-1' : ''}`;
@@ -187,19 +245,20 @@
             const content = document.createElement('div');
             content.className = "flex flex-wrap items-center gap-3 p-3 bg-white border border-slate-200 rounded-lg hover:border-blue-300 transition-all group relative";
             
-            // Checkbox per occupazione
             const check = document.createElement('input');
             check.type = 'checkbox';
+            check.dataset.key = subUniqueKey;
             check.className = "w-4 h-4 rounded border-slate-300 text-amber-500 focus:ring-amber-500 cursor-pointer";
+            
             check.onchange = (e) => {
                 if(e.target.checked) {
-                    occupiedSubnets.add(usable);
+                    occupiedMap[subUniqueKey] = usable;
                     content.classList.add('occupied-row');
                 } else {
-                    occupiedSubnets.delete(usable);
+                    delete occupiedMap[subUniqueKey];
                     content.classList.remove('occupied-row');
                 }
-                calculateGlobalStats();
+                refreshHierarchyLocks(hierarchyRoot);
             };
 
             const mainInfo = document.createElement('div');
@@ -210,35 +269,25 @@
                     <span class="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded font-bold uppercase">Host: ${usable}</span>
                 </div>
                 <div class="grid grid-cols-2 gap-x-4 mt-1">
-                    <div class="text-[10px] text-slate-400 font-mono">Range: ${cidr <= 30 ? longToIp(netLong+1) + ' - ' + longToIp(bcLong-1) : 'P2P/Single'}</div>
+                    <div class="text-[10px] text-slate-400 font-mono italic">Range: ${cidr <= 30 ? longToIp(netLong+1) + ' - ' + longToIp(bcLong-1) : 'P2P/Host'}</div>
                     <div class="text-[10px] text-slate-400 font-mono text-right">BC: ${longToIp(bcLong)}</div>
                 </div>
             `;
 
             const actions = document.createElement('div');
             const splitBtn = document.createElement('button');
-            splitBtn.innerHTML = `
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
-            `;
+            splitBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>`;
             splitBtn.className = "p-1.5 bg-slate-100 text-slate-500 rounded hover:bg-blue-500 hover:text-white transition-colors disabled:opacity-30";
             if (cidr >= 32) splitBtn.disabled = true;
 
             const childrenContainer = document.createElement('div');
-            childrenContainer.className = "hidden";
+            childrenContainer.className = "children-container hidden";
 
             splitBtn.onclick = () => {
                 if (childrenContainer.classList.contains('hidden')) {
                     const newCidr = cidr + 1;
                     const halfSize = Math.pow(2, 32 - newCidr);
                     
-                    // Se dividiamo una rete occupata, la liberiamo per sicurezza (o l'utente sceglie i pezzi)
-                    if (check.checked) {
-                        check.checked = false;
-                        occupiedSubnets.delete(usable);
-                        content.classList.remove('occupied-row');
-                        calculateGlobalStats();
-                    }
-
                     childrenContainer.innerHTML = '';
                     childrenContainer.appendChild(createSubnetRow(netLong, newCidr, depth + 1));
                     childrenContainer.appendChild(createSubnetRow(netLong + halfSize, newCidr, depth + 1));
@@ -247,15 +296,18 @@
                     splitBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path></svg>`;
                     splitBtn.classList.replace('bg-slate-100', 'bg-slate-800');
                     splitBtn.classList.add('text-white');
+                    refreshHierarchyLocks(hierarchyRoot);
                 } else {
-                    // Quando chiudiamo, dobbiamo pulire gli host occupati nei figli
                     const childChecks = childrenContainer.querySelectorAll('input[type="checkbox"]:checked');
-                    childChecks.forEach(c => c.click()); // Simula l'uncheck per aggiornare il set
-
+                    childChecks.forEach(c => {
+                        c.checked = false;
+                        delete occupiedMap[c.dataset.key];
+                    });
                     childrenContainer.classList.add('hidden');
                     splitBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>`;
                     splitBtn.classList.replace('bg-slate-800', 'bg-slate-100');
                     splitBtn.classList.remove('text-white');
+                    refreshHierarchyLocks(hierarchyRoot);
                 }
             };
 
@@ -273,7 +325,6 @@
         ipInput.addEventListener('input', updateUI);
         cidrSelect.addEventListener('change', updateUI);
 
-        // Init
         updateUI();
     </script>
 </body>
